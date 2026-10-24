@@ -12,9 +12,23 @@ Ubuntu 24.04-VM med SteamCMD och systemd, driftsatt med Bicep. Bakgrund och desi
 ## Driftsätt
 
 ```powershell
-$env:VALHEIM_PASSWORD = 'minst5tecken'
+# Lösenordet skrivs maskerat och hamnar inte i kommandohistoriken (PowerShell 7.1+)
+$env:VALHEIM_PASSWORD = Read-Host -MaskInput 'Serverlösenord'
 ./deploy.ps1 -ResourceGroup rg-valheim -Location swedencentral
 ```
+
+Om `VALHEIM_PASSWORD` inte är satt frågar `deploy.ps1` efter lösenordet på samma sätt.
+
+I Windows PowerShell 5.1 saknas `-MaskInput`. Använd SecureString i stället:
+
+```powershell
+$secure = Read-Host -AsSecureString 'Serverlösenord'
+$env:VALHEIM_PASSWORD = [System.Net.NetworkCredential]::new('', $secure).Password
+```
+
+Miljövariabeln lever bara i den aktuella sessionen. Töm den efteråt med
+`Remove-Item Env:VALHEIM_PASSWORD`. Samma mönster fungerar för `VALHEIM_SSH_PUBLIC_KEY`
+och `VALHEIM_ADMIN_CIDR`, men de är inte hemliga och kan sättas i klartext.
 
 Skriptet kör `what-if` först och frågar innan det driftsätter. Justera servernamn, värld,
 preset, modifiers och adminlista i `main.bicepparam`.

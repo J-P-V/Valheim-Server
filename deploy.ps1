@@ -5,13 +5,18 @@
 .DESCRIPTION
   Skapar resursgruppen, kör what-if och driftsätter main.bicep med main.bicepparam.
   Miljövariabler som används av parameterfilen:
-    VALHEIM_PASSWORD        (krävs) serverlösenord, minst 5 tecken
+    VALHEIM_PASSWORD        (valfri) serverlösenord, minst 5 tecken. Saknas den frågar skriptet maskerat.
     VALHEIM_SSH_PUBLIC_KEY  (valfri) publik SSH-nyckel, annars läses ~/.ssh/id_ed25519.pub eller id_rsa.pub
     VALHEIM_ADMIN_CIDR      (valfri) CIDR som får nå SSH, annars din publika IP/32
 
 .EXAMPLE
-  $env:VALHEIM_PASSWORD = 'hemligt123'
+  # Lösenordet frågas efter maskerat
   ./deploy.ps1 -ResourceGroup rg-valheim -Location swedencentral
+
+.EXAMPLE
+  # Sätt lösenordet i förväg utan klartext i kommandot
+  $env:VALHEIM_PASSWORD = Read-Host -MaskInput 'Serverlösenord'
+  ./deploy.ps1 -ResourceGroup rg-valheim
 #>
 [CmdletBinding()]
 param(
@@ -32,7 +37,9 @@ param(
 $ErrorActionPreference = 'Stop'
 
 if (-not $env:VALHEIM_PASSWORD) {
-  throw 'Sätt miljövariabeln VALHEIM_PASSWORD (minst 5 tecken, får inte innehålla servernamnet).'
+  # Fråga maskerat så lösenordet varken syns på skärmen eller hamnar i historiken.
+  $secure = Read-Host -AsSecureString 'Serverlösenord (minst 5 tecken, får inte innehålla servernamnet)'
+  $env:VALHEIM_PASSWORD = [System.Net.NetworkCredential]::new('', $secure).Password
 }
 if ($env:VALHEIM_PASSWORD.Length -lt 5) {
   throw 'VALHEIM_PASSWORD måste vara minst 5 tecken.'
