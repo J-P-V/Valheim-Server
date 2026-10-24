@@ -1,0 +1,191 @@
+#cloud-config
+# Valheim dedikerad server på Ubuntu 24.04.
+# Filen körs genom Bicep format(): {0}..{3} ersätts, därför är alla andra klammerparenteser dubblerade.
+#   {0} = /etc/valheim/server.env (base64)
+#   {1} = adminlist.txt (base64)
+#   {2} = permittedlist.txt (base64)
+#   {3} = bannedlist.txt (base64)
+
+package_update: true
+package_upgrade: false
+
+users:
+  - default
+  - name: valheim
+    system: true
+    shell: /bin/bash
+    homedir: /var/lib/valheim
+    create_home: true  # steamcmd behöver ett skrivbart HOME
+
+write_files:
+  - path: /etc/valheim/server.env
+    owner: root:root
+    permissions: '0640'
+    encoding: b64
+    content: "{0}"
+
+  - path: /opt/valheim-config/lists/adminlist.txt
+    permissions: '0644'
+    encoding: b64
+    content: "{1}"
+
+  - path: /opt/valheim-config/lists/permittedlist.txt
+    permissions: '0644'
+    encoding: b64
+    content: "{2}"
+
+  - path: /opt/valheim-config/lists/bannedlist.txt
+    permissions: '0644'
+    encoding: b64
+    content: "{3}"
+
+  # Egen kopia av startlogiken. Originalet start_server.sh i /opt/valheim skrivs över vid varje uppdatering.
+  - path: /opt/valheim-config/start.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      cd /opt/valheim
+      export LD_LIBRARY_PATH=./linux64:$LD_LIBRARY_PATH
+      export SteamAppId=892970
+
+      PASSWORD="$SERVER_PASSWORD"
+      if [ -s /run/valheim/password ]; then
+        PASSWORD=$(cat /run/valheim/password)
+      fi
+
+      ARGS=(
+        -name "$SERVER_NAME"
+        -port "$GAME_PORT"
+        -world "$WORLD_NAME"
+        -password "$PASSWORD"
+        -savedir "$SAVE_DIR"
+        -public "$IS_PUBLIC"
+        -saveinterval "$SAVE_INTERVAL"
+        -backups "$BACKUPS"
+        -backupshort "$BACKUP_SHORT"
+        -backuplong "$BACKUP_LONG"
+      )
+      if [ "$CROSSPLAY" = "true" ]; then
+        ARGS+=(-crossplay)
+      fi
+      if [ -n "$PRESET" ]; then
+        ARGS+=(-preset "$PRESET")
+      fi
+      # MODIFIER_ARGS och SETKEY_ARGS är färdiga strängar, t.ex. "-modifier combat hard -setkey nomap"
+      ARGS+=($MODIFIER_ARGS)
+      ARGS+=($SETKEY_ARGS)
+
+      echo "Startar Valheim: namn=$SERVER_NAME port=$GAME_PORT värld=$WORLD_NAME crossplay=$CROSSPLAY"
+      exec ./valheim_server.x86_64 "${{ARGS[@]}}"
+
+  # Körs av ExecStartPre så servern alltid är patchad vid start.
+  - path: /opt/valheim-config/update.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      /usr/games/steamcmd +force_install_dir /opt/valheim +login anonymous +app_update 896660 validate +quit
+
+  # Hämtar lösenordet från Key Vault via managed identity om KEYVAULT_URI är satt.
+  - path: /opt/valheim-config/fetch-password.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      if [ -z "$KEYVAULT_URI" ]; then
+        exit 0
+      fi
+      IMDS="http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net"
+      for i in $(seq 1 30); do
+        TOKEN=$(curl -sf -H Metadata:true "$IMDS" | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])") || TOKEN=
+        if [ -n "$TOKEN" ]; then
+          SECRET=$(curl -sf -H "Authorization: Bearer $TOKEN" "$KEYVAULT_URI/secrets/$KEYVAULT_SECRET?api-version=7.4" | python3 -c "import sys,json;print(json.load(sys.stdin)['value'])") || SECRET=
+          if [ -n "$SECRET" ]; then
+            umask 077
+            printf '%s' "$SECRET" > /run/valheim/password
+            exit 0
+          fi
+        fi
+        echo "Väntar på åtkomst till Key Vault (försök $i/30)..."
+        sleep 10
+      done
+      echo "Kunde inte hämta lösenordet från Key Vault" >&2
+      exit 1
+
+  - path: /etc/systemd/system/valheim.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Valheim Dedicated Server
+      Wants=network-online.target
+      After=network-online.target
+      RequiresMountsFor=/srv/valheim-data
+
+      [Service]
+      Type=simple
+      User=valheim
+      Group=valheim
+      WorkingDirectory=/opt/valheim
+      EnvironmentFile=/etc/valheim/server.env
+      RuntimeDirectory=valheim
+      RuntimeDirectoryMode=0700
+      ExecStartPre=/opt/valheim-config/update.sh
+      ExecStartPre=/opt/valheim-config/fetch-password.sh
+      ExecStart=/opt/valheim-config/start.sh
+      # Motsvarar CTRL+C i guiden; annars kan servern leva vidare utan att spara.
+      KillSignal=SIGINT
+      TimeoutStopSec=120
+      Restart=on-failure
+      RestartSec=15
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # 1. Datadisk (LUN 0) för världar: formatera om tom, montera via UUID.
+  - |
+    set -e
+    DEV=/dev/disk/azure/scsi1/lun0
+    for i in $(seq 1 30); do
+      if [ -e $DEV ]; then break; fi
+      sleep 2
+    done
+    if ! blkid $DEV >/dev/null 2>&1; then
+      mkfs.ext4 -L valheimdata $DEV
+    fi
+    mkdir -p /srv/valheim-data
+    UUID=$(blkid -s UUID -o value $DEV)
+    if ! grep -q "$UUID" /etc/fstab; then
+      echo "UUID=$UUID /srv/valheim-data ext4 defaults,nofail 0 2" >> /etc/fstab
+    fi
+    systemctl daemon-reload
+    mount -a
+    install -d -o valheim -g valheim /srv/valheim-data/saves
+    chown valheim:valheim /srv/valheim-data
+
+  # 2. Behörighetsfiler till savedir.
+  - |
+    for f in adminlist permittedlist bannedlist; do
+      install -o valheim -g valheim -m 0644 /opt/valheim-config/lists/$f.txt /srv/valheim-data/saves/$f.txt
+    done
+    chgrp valheim /etc/valheim/server.env
+
+  # 3. SteamCMD och körtidsberoenden.
+  - |
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+    dpkg --add-architecture i386
+    add-apt-repository -y multiverse
+    echo "steam steam/question select I AGREE" | debconf-set-selections
+    echo "steam steam/license note ''" | debconf-set-selections
+    apt-get update
+    apt-get install -y steamcmd libatomic1 libpulse0 libpulse-dev lib32gcc-s1 curl python3
+
+  # 4. Installera servern och starta tjänsten.
+  - install -d -o valheim -g valheim /opt/valheim
+  - sudo -u valheim /opt/valheim-config/update.sh
+  - systemctl daemon-reload
+  - systemctl enable --now valheim.service
+
+final_message: "Valheim-servern är installerad efter $UPTIME sekunder. Följ loggen med: journalctl -u valheim -f"

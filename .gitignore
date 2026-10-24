@@ -1,0 +1,11 @@
+# Lokala parameterfiler med riktiga värden
+*.local.bicepparam
+
+# Kompilerad ARM-utdata
+*.json
+!bicepconfig.json
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
