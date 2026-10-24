@@ -5,9 +5,92 @@ Ubuntu 24.04-VM med SteamCMD och systemd, driftsatt med Bicep. Bakgrund och desi
 
 ## Förutsättningar
 
-- Azure CLI med Bicep (`az bicep version`)
-- Inloggad: `az login` och rätt prenumeration vald
-- En SSH-nyckel (`ssh-keygen -t ed25519`)
+### Verktyg på din dator
+
+| Verktyg | Krav | Installation (Windows) |
+| --- | --- | --- |
+| PowerShell 7 | 7.1 eller senare för `Read-Host -MaskInput`. 5.1 fungerar med SecureString-varianten. | `winget install Microsoft.PowerShell` |
+| Azure CLI | 2.60 eller senare (stöd för `.bicepparam` med `readEnvironmentVariable`) | `winget install Microsoft.AzureCLI` |
+| Bicep CLI | 0.30 eller senare. Installeras och uppdateras via Azure CLI. | `az bicep install` eller `az bicep upgrade` |
+| OpenSSH-klient | För `ssh-keygen` och inloggning på servern | Ingår i Windows 10/11. Annars: `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0` |
+| Git | Valfritt, för att klona och versionshantera | `winget install Git.Git` |
+
+Kontrollera versionerna:
+
+```powershell
+$PSVersionTable.PSVersion
+az version
+az bicep version
+ssh -V
+```
+
+På macOS och Linux installeras Azure CLI enligt
+[Microsofts guide](https://learn.microsoft.com/cli/azure/install-azure-cli) och PowerShell 7 via
+`brew install powershell` respektive distributionens paket. `deploy.ps1` kräver PowerShell men
+Bicep-filerna kan även driftsättas direkt med `az deployment group create`.
+
+### SSH-nyckel
+
+`deploy.ps1` letar efter `~/.ssh/id_ed25519.pub` eller `~/.ssh/id_rsa.pub`. Skapa en nyckel om du
+saknar en:
+
+```powershell
+ssh-keygen -t ed25519 -C "valheim"
+```
+
+Vill du använda en annan nyckel, sätt `VALHEIM_SSH_PUBLIC_KEY` till innehållet i `.pub`-filen.
+
+### Azure-konto och inloggning
+
+```powershell
+az login
+az account list --output table
+az account set --subscription "<namn eller id>"
+```
+
+Behörigheter som behövs i prenumerationen eller resursgruppen:
+
+- **Contributor** för att skapa resurserna.
+- **User Access Administrator** eller **Owner** när `useKeyVault = true`, eftersom
+  `modules/keyvault.bicep` tilldelar VM:en rollen Key Vault Secrets User. Med bara Contributor
+  misslyckas rolltilldelningen. Sätt då `useKeyVault = false` i `main.bicepparam`, så läggs lösenordet
+  i cloud-init i stället.
+
+### Resursproviders och kvoter
+
+Nya prenumerationer har inte alltid alla providers registrerade. Kontrollera och registrera vid behov:
+
+```powershell
+az provider show --namespace Microsoft.Compute --query registrationState
+az provider show --namespace Microsoft.Network --query registrationState
+az provider show --namespace Microsoft.KeyVault --query registrationState
+az provider show --namespace Microsoft.DevTestLab --query registrationState   # krävs för auto-shutdown
+az provider register --namespace Microsoft.DevTestLab
+```
+
+VM-storleken `Standard_B2ms` kräver 2 vCPU av kvoten för B-serien i vald region. Kontrollera med:
+
+```powershell
+az vm list-usage --location swedencentral --query "[?contains(name.value, 'standardBSFamily')]" --output table
+```
+
+Är kvoten 0 begär du en höjning i portalen under Prenumeration, Användning och kvoter, eller
+byter `vmSize` till en storlek du har kvot för.
+
+### Nätverk på din sida
+
+- `deploy.ps1` hämtar din publika IP från api.ipify.org och tillåter SSH bara därifrån. Byter
+  din IP måste NSG-regeln uppdateras, enklast genom att köra `deploy.ps1` igen.
+- Utan crossplay måste Valheim-klienten nå UDP `gamePort` och `gamePort+1` utåt. Det är normalt
+  öppet i hemmanätverk.
+
+### Kostnad
+
+En `Standard_B2ms` med två StandardSSD-diskar och statisk publik IP kostar ungefär 600–700 kr per
+månad vid dygnet runt-drift i Sweden Central. Auto-shutdown via `autoShutdownTime` sänker
+beräkningskostnaden, men diskar och IP debiteras även när VM:en är avstängd. Siffran är ungefärlig
+och bör kontrolleras i
+[Azure Pricing Calculator](https://azure.microsoft.com/pricing/calculator/).
 
 ## Driftsätt
 
