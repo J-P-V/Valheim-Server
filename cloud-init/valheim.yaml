@@ -15,7 +15,7 @@ users:
     system: true
     shell: /bin/bash
     homedir: /var/lib/valheim
-    create_home: true  # steamcmd behöver ett skrivbart HOME
+    no_create_home: false
 
 write_files:
   - path: /etc/valheim/server.env
@@ -44,9 +44,9 @@ write_files:
     permissions: '0755'
     content: |
       #!/bin/bash
-      set -e
+      set -eu
       cd /opt/valheim
-      export LD_LIBRARY_PATH=./linux64:$LD_LIBRARY_PATH
+      export LD_LIBRARY_PATH=./linux64:${{LD_LIBRARY_PATH:-}}
       export SteamAppId=892970
 
       PASSWORD="$SERVER_PASSWORD"
@@ -84,23 +84,27 @@ write_files:
     permissions: '0755'
     content: |
       #!/bin/bash
-      set -e
-      /usr/games/steamcmd +force_install_dir /opt/valheim +login anonymous +app_update 896660 validate +quit
+      set -eu
+      /usr/games/steamcmd +@ShutdownOnFailedCommand 1 +@NoPromptForPassword 1 +force_install_dir /opt/valheim +login anonymous +app_update 896660 validate +quit
+      if [ ! -x /opt/valheim/valheim_server.x86_64 ]; then
+        echo "SteamCMD did not install the Valheim server executable" >&2
+        exit 1
+      fi
 
   # Hämtar lösenordet från Key Vault via managed identity om KEYVAULT_URI är satt.
   - path: /opt/valheim-config/fetch-password.sh
     permissions: '0755'
     content: |
       #!/bin/bash
-      set -e
+      set -euo pipefail
       if [ -z "$KEYVAULT_URI" ]; then
         exit 0
       fi
       IMDS="http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net"
       for i in $(seq 1 30); do
-        TOKEN=$(curl -sf -H Metadata:true "$IMDS" | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])") || TOKEN=
+        TOKEN=$(curl --noproxy '*' -fsS --connect-timeout 5 --max-time 5 -H Metadata:true "$IMDS" | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])") || TOKEN=
         if [ -n "$TOKEN" ]; then
-          SECRET=$(curl -sf -H "Authorization: Bearer $TOKEN" "$KEYVAULT_URI/secrets/$KEYVAULT_SECRET?api-version=7.4" | python3 -c "import sys,json;print(json.load(sys.stdin)['value'])") || SECRET=
+          SECRET=$(curl -fsS --connect-timeout 5 --max-time 15 -H "Authorization: Bearer $TOKEN" "$KEYVAULT_URI/secrets/$KEYVAULT_SECRET?api-version=7.4" | python3 -c "import sys,json;print(json.load(sys.stdin)['value'])") || SECRET=
           if [ -n "$SECRET" ]; then
             umask 077
             printf '%s' "$SECRET" > /run/valheim/password
@@ -130,6 +134,8 @@ write_files:
       EnvironmentFile=/etc/valheim/server.env
       RuntimeDirectory=valheim
       RuntimeDirectoryMode=0700
+      TimeoutStartSec=30min
+      ExecStartPre=/usr/bin/mountpoint /srv/valheim-data
       ExecStartPre=/opt/valheim-config/update.sh
       ExecStartPre=/opt/valheim-config/fetch-password.sh
       ExecStart=/opt/valheim-config/start.sh
@@ -145,27 +151,65 @@ write_files:
 runcmd:
   # 1. Datadisk (LUN 0) för världar: formatera om tom, montera via UUID.
   - |
-    set -e
-    DEV=/dev/disk/azure/scsi1/lun0
+    set -eu
+    DEV=
     for i in $(seq 1 30); do
-      if [ -e $DEV ]; then break; fi
+      for candidate in /dev/disk/azure/data/by-lun/0 /dev/disk/azure/scsi1/lun0; do
+        if [ -b "$candidate" ]; then
+          DEV=$candidate
+          break 2
+        fi
+      done
       sleep 2
     done
-    if ! blkid $DEV >/dev/null 2>&1; then
-      mkfs.ext4 -L valheimdata $DEV
+    if [ -z "$DEV" ]; then
+      echo "Azure data disk LUN 0 was not found (NVMe or SCSI)" >&2
+      exit 1
+    fi
+    if [ "$(lsblk --noheadings --output TYPE "$DEV")" != "disk" ]; then
+      echo "Refusing to use a partitioned data disk: $DEV" >&2
+      exit 1
+    fi
+    SIGNATURES=$(wipefs --no-act --noheadings --output TYPE "$DEV")
+    if [ -z "$SIGNATURES" ]; then
+      if findmnt --noheadings --source "$DEV" >/dev/null; then
+        echo "Refusing to format a mounted data disk: $DEV" >&2
+        exit 1
+      fi
+      mkfs.ext4 -L valheimdata "$DEV"
+    elif [ "$SIGNATURES" != "ext4" ]; then
+      echo "Refusing to overwrite an existing data disk signature: $SIGNATURES" >&2
+      exit 1
     fi
     mkdir -p /srv/valheim-data
-    UUID=$(blkid -s UUID -o value $DEV)
-    if ! grep -q "$UUID" /etc/fstab; then
+    UUID=$(blkid -s UUID -o value "$DEV")
+    if [ -z "$UUID" ]; then
+      echo "Data disk UUID is empty" >&2
+      exit 1
+    fi
+    if grep -qE '^[^#]+[[:space:]]/srv/valheim-data[[:space:]]' /etc/fstab; then
+      SOURCE=$(findmnt --fstab --noheadings --output SOURCE --mountpoint /srv/valheim-data)
+      if [ "$SOURCE" != "UUID=$UUID" ]; then
+        echo "Existing fstab entry does not match data disk LUN 0: $SOURCE" >&2
+        exit 1
+      fi
+    else
       echo "UUID=$UUID /srv/valheim-data ext4 defaults,nofail 0 2" >> /etc/fstab
     fi
     systemctl daemon-reload
-    mount -a
+    if ! mountpoint -q /srv/valheim-data; then
+      mount /srv/valheim-data
+    fi
+    if [ "$(findmnt --noheadings --output UUID --mountpoint /srv/valheim-data)" != "$UUID" ]; then
+      echo "The save directory is not mounted from data disk LUN 0" >&2
+      exit 1
+    fi
     install -d -o valheim -g valheim /srv/valheim-data/saves
     chown valheim:valheim /srv/valheim-data
 
   # 2. Behörighetsfiler till savedir.
   - |
+    install -d -o valheim -g valheim -m 0750 /var/lib/valheim
     for f in adminlist permittedlist bannedlist; do
       install -o valheim -g valheim -m 0644 /opt/valheim-config/lists/$f.txt /srv/valheim-data/saves/$f.txt
     done
@@ -184,8 +228,7 @@ runcmd:
 
   # 4. Installera servern och starta tjänsten.
   - install -d -o valheim -g valheim /opt/valheim
-  - sudo -u valheim /opt/valheim-config/update.sh
   - systemctl daemon-reload
   - systemctl enable --now valheim.service
 
-final_message: "Valheim-servern är installerad efter $UPTIME sekunder. Följ loggen med: journalctl -u valheim -f"
+final_message: "Cloud-init har avslutats efter $UPTIME sekunder. Kontrollera resultatet med: cloud-init status --long och journalctl -u valheim"
