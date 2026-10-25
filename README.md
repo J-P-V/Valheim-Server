@@ -144,8 +144,42 @@ sudo tail -f /var/log/cloud-init-output.log   # installationslogg vid första st
 Tjänsten stoppas med SIGINT, så `systemctl stop`, omstart av VM:en och auto-shutdown låter
 servern spara världen innan den avslutas.
 
+### Installation och datadisk
+
+- LUN 0 hittas via `/dev/disk/azure/data/by-lun/0` (NVMe) eller
+  `/dev/disk/azure/scsi1/lun0` (SCSI). Det fungerar även med NVMe-baserade VM-storlekar som
+  `Standard_D2als_v6`.
+- Bara en disk utan partitions- eller filsystemsignaturer formateras. En befintlig ext4-disk
+  återanvänds; andra format och motstridiga monteringar stoppar installationen med ett fel.
+- Tjänsten kontrollerar att `/srv/valheim-data` är en monteringspunkt innan den uppdaterar
+  eller startar spelet. Den ska inte skriva världar till OS-disken om datadisken saknas.
+- SteamCMD körs en gång vid tjänstestart. Starten får ta upp till 30 minuter för installation,
+  uppdatering och väntan på Key Vault-behörigheter. Key Vault-anrop har egna tidsgränser.
+- Cloud-inits slutmeddelande är inte ett installationskvitto. Kontrollera både
+  `sudo cloud-init status --long` och `sudo systemctl status valheim`.
+
+Ändringar i cloud-init gäller vid första starten av en ny VM. En vanlig Bicep-driftsättning
+installerar inte om en befintlig VM. Vid reparation av en befintlig server: säkerhetskopiera
+konfiguration och världar, uppdatera berörda skript och tjänstefilen, kör
+`sudo systemctl daemon-reload` och starta om tjänsten. Kör inte om hela cloud-init för att
+uppdatera en redan installerad server.
+
+### Behörighetslistor och anslutningskontroll
+
+En icke-tom `permittedlist.txt` tillåter bara listade plattforms-ID:n, även om spelaren har rätt
+lösenord. Steam-poster måste använda det numeriska SteamID64, exempelvis
+`Steam_76561198012345678`, inte ett visningsnamn eller en profilalias. Använd spelarens faktiska
+plattforms-ID från spelet eller anslutningsloggen; gissa inte ett konto från ett namn.
+
+Med crossplay ska loggen visa att sessionen är aktiv och har en join-kod. Koden kan ändras
+vid omstart. En aktiv systemd-tjänst ensam bevisar inte att en spelklient kan ansluta. Testa
+join-koden med en tillåten spelare och kontrollera anslutningsloggen.
+
 ## Nätverk
 
 - Utan crossplay öppnas UDP `gamePort`–`gamePort+1` från internet. Anslut med `FQDN:port`.
-- Med `crossplay = true` öppnas inga spelportar. Join-koden skrivs i serverloggen.
+- Med `crossplay = true` öppnas inga spelportar. Anslut via join-koden i serverloggen,
+  serverlistan eller publik IP och port. Lokal IP och loopback fungerar inte med crossplay.
 - SSH tillåts bara från `adminSourceIp`.
+
+Se även [Valheims officiella serverguide](https://www.valheimgame.com/support/a-guide-to-dedicated-servers/).

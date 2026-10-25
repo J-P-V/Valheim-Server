@@ -49,7 +49,7 @@ param gamePort int = 2456
 @description('Visa servern i den publika serverlistan.')
 param isPublic bool = true
 
-@description('Crossplay via PlayFab-relay. Då behövs inga öppna spelportar, men servern kan inte nås via IP.')
+@description('Crossplay via PlayFab-relay. Inga öppna spelportar behövs. Anslut via publik IP, join-kod eller serverlistan; lokal IP fungerar inte.')
 param crossplay bool = false
 
 @description('Svårighetspreset. Tom sträng skickar ingen -preset.')
