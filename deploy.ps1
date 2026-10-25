@@ -66,6 +66,7 @@ Write-Host "SSH tillåts från: $env:VALHEIM_ADMIN_CIDR"
 
 Write-Host "Resursgrupp: $ResourceGroup ($Location)"
 az group create --name $ResourceGroup --location $Location --output none
+
 if ($LASTEXITCODE -ne 0) { throw 'Kunde inte skapa resursgruppen.' }
 
 if (-not $Force) {
