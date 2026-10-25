@@ -7,11 +7,11 @@ param adminSshPublicKey = readEnvironmentVariable('VALHEIM_SSH_PUBLIC_KEY')
 param adminSourceIp = readEnvironmentVariable('VALHEIM_ADMIN_CIDR')
 
 // ---------- Spel ----------
-param serverName = 'Min Valheim-server'
-param worldName = 'Dedicated'
+param serverName = 'Midgard Misfits'
+param worldName = 'Misfitheim'
 param gamePort = 2456
 param isPublic = true
-param crossplay = false
+param crossplay = true
 
 // Tom sträng = spelets standard. Alternativ: normal, casual, easy, hard, hardcore, immersive, hammer.
 param preset = ''
@@ -22,23 +22,24 @@ param modifiers = []
 // Exempel: ['nomap', 'passivemobs']
 param setKeys = []
 
-param saveInterval = 1800
-param backups = 4
+param saveInterval = 900
+param backups = 96
 param backupShort = 7200
 param backupLong = 43200
 
 // Formatet är [Plattform]_[UserID], t.ex. 'Steam_76561198012345678'.
-param adminIds = []
-param permittedIds = []
+param adminIds = ['Steam_76561197987446879']
+param permittedIds = ['Steam_76561197987446879', 'Steam_76561198030940734', 'Steam_CM4rk']
 param bannedIds = []
 
 // ---------- Infrastruktur ----------
 param namePrefix = 'valheim'
-param vmSize = 'Standard_B2ms'
+param vmSize = 'Standard_D2als_v6'
 param dataDiskSizeGb = 32
 param adminUsername = 'azureuser'
 param useKeyVault = true
 
 // Tom sträng = ingen auto-shutdown. Exempel: '0100' stänger av kl. 01:00.
+// param autoShutdownTime = '0000'
 param autoShutdownTime = ''
 param autoShutdownTimeZone = 'W. Europe Standard Time'
