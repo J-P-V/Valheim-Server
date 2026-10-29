@@ -34,7 +34,7 @@ param bannedIds = []
 
 // ---------- Infrastruktur ----------
 param namePrefix = 'valheim'
-param vmSize = 'Standard_D2als_v6'
+param vmSize = 'Standard_B2ls_v2'
 param dataDiskSizeGb = 32
 param adminUsername = 'azureuser'
 param useKeyVault = true
