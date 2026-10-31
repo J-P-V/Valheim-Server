@@ -29,7 +29,7 @@ param backupLong = 43200
 
 // Formatet är [Plattform]_[UserID], t.ex. 'Steam_76561198012345678'.
 param adminIds = ['Steam_76561197987446879']
-param permittedIds = ['Steam_76561197987446879', 'Steam_76561198030940734', 'Steam_CM4rk']
+param permittedIds = []
 param bannedIds = []
 
 // ---------- Infrastruktur ----------
